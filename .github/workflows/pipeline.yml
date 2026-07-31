@@ -54,10 +54,16 @@ jobs:
         run: |
           mkdir -p /tmp/gdrive
           rclone mount gdrive: /tmp/gdrive \
-            --daemon --vfs-cache-mode writes --allow-other \
-            --dir-cache-time 30s --poll-interval 15s
+            --daemon --vfs-cache-mode writes \
+            --dir-cache-time 30s --poll-interval 15s \
+            --log-file /tmp/rclone.log --log-level INFO
           sleep 5
-          ls /tmp/gdrive || (echo "::error::Drive mount failed" && exit 1)
+          if ! mountpoint -q /tmp/gdrive; then
+            echo "::error::Drive mount failed"
+            cat /tmp/rclone.log || true
+            exit 1
+          fi
+          ls /tmp/gdrive
 
       - name: Run pipeline
         env:
