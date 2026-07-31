@@ -114,7 +114,7 @@ for _d in (BROLL_DIR, SCENE_LIBRARY_DIR):
 
 BROLL_RATIO = float(os.environ.get("BROLL_RATIO", "0.4"))
 
-IMAGE_MODEL_CHAIN = ["gpt-image-2", "gptimage", "flux", "sana", "klein", "zimage"]
+IMAGE_MODEL_CHAIN = ["gpt-image-2", "gptimage"]
 MAX_ATTEMPTS_PER_IMAGE_MODEL = 3
 PLAN_DURATION_TOLERANCE_SECS = 0.20
 
