@@ -22,6 +22,7 @@ from .content_gen import (
     split_text_for_narration, load_chunks, create_novel_video_script,
     text_to_audio_gemini, get_audio_duration,
 )
+from .drive_sync import wait_for_upload
 from .images_v3 import generate_verified_image_v3
 from .library import load_libraries
 from .planner import plan_video, reconcile_plan
@@ -151,6 +152,9 @@ def process_file_step(file_path, max_new_chunks, output_dir=None, language="Urdu
             save_run_state(run_dir, state)
 
         chunk_video_path = assemble_chunk_video_v3(segments, narration_path, chunk_video_path)
+        print(f"   ⏳ confirming chunk {chunk_id} reached Google Drive before continuing...")
+        if wait_for_upload(chunk_video_path, label=f"{video_name} chunk {chunk_id}"):
+            print(f"   ☁️  chunk {chunk_id} confirmed on Drive")
         c_state["chunk_video_done"] = True
         save_run_state(run_dir, state)
         chunk_video_paths.append(chunk_video_path)
@@ -166,6 +170,9 @@ def process_file_step(file_path, max_new_chunks, output_dir=None, language="Urdu
         os.path.join(chunks_dir, f"{video_name}-chunk{c['chunk']}.mp4") for c in chunks
     ]
     final_path = assemble_final_video(all_chunk_video_paths, final_path)
+    print(f"   ⏳ confirming final video reached Google Drive...")
+    if wait_for_upload(final_path, label=f"{video_name} final"):
+        print(f"   ☁️  final video confirmed on Drive")
     state["final_done"] = True
     save_run_state(run_dir, state)
     print(f"\n🎬 Done: {final_path}")
