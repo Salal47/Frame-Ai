@@ -53,7 +53,8 @@ Prompt that was sent to the image generator to produce this image:
 
 Judge the image on:
 1. Cleanliness — no garbled text, no mangled hands/faces, no broken anatomy, no watermark artifacts.
-2. Match — does it genuinely depict the subject, setting, and mood described above?
+2. Match — does it genuinely depict the subject, setting, and mood described above
+3. do not more strict, ignore minor detail error. if most of the things match
 
 If, and only if, it fails ("ok": false), also rewrite the generation prompt so a retry avoids this exact
 problem — be more specific/constraining about composition, framing, anatomy, or whatever is needed to fix
