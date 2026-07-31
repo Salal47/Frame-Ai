@@ -38,21 +38,26 @@ jobs:
       - name: Install rclone
         run: curl https://rclone.org/install.sh | sudo bash
 
-      - name: Configure Google Drive service account
+      - name: Configure Google Drive OAuth
+        # Switched from a Service Account to OAuth: Service Accounts have no
+        # storage quota of their own on My Drive, so every upload failed with
+        # "403 storageQuotaExceeded". A real Google account (OAuth) has
+        # quota, so uploads succeed. GDRIVE_OAUTH_TOKEN is generated ONCE,
+        # locally, via `rclone authorize "drive"` — see README.md.
         run: |
           mkdir -p "$HOME/.config/rclone"
-          cat > "$HOME/gdrive-sa.json" <<'SAEOF'
-          ${{ secrets.GDRIVE_SA_JSON }}
-          SAEOF
-          # Fail fast if the secret didn't come through as valid JSON
-          # (e.g. empty secret, or newlines mangled by echo '...').
-          python3 -c "import json,sys; json.load(open('$HOME/gdrive-sa.json'))" \
-            || { echo "::error::GDRIVE_SA_JSON secret is missing or not valid JSON"; exit 1; }
+
+          # Fail fast if the secret didn't come through as valid JSON.
+          python3 -c "import json,sys; json.loads('''${{ secrets.GDRIVE_OAUTH_TOKEN }}''')" \
+            || { echo "::error::GDRIVE_OAUTH_TOKEN secret is missing or not valid JSON"; exit 1; }
+
           cat > "$HOME/.config/rclone/rclone.conf" <<EOF
           [gdrive]
           type = drive
           scope = drive
-          service_account_file = $HOME/gdrive-sa.json
+          client_id = ${{ secrets.GDRIVE_CLIENT_ID }}
+          client_secret = ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          token = ${{ secrets.GDRIVE_OAUTH_TOKEN }}
           root_folder_id = ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
           EOF
 
