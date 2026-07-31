@@ -41,7 +41,13 @@ jobs:
       - name: Configure Google Drive service account
         run: |
           mkdir -p "$HOME/.config/rclone"
-          echo '${{ secrets.GDRIVE_SA_JSON }}' > "$HOME/gdrive-sa.json"
+          cat > "$HOME/gdrive-sa.json" <<'SAEOF'
+          ${{ secrets.GDRIVE_SA_JSON }}
+          SAEOF
+          # Fail fast if the secret didn't come through as valid JSON
+          # (e.g. empty secret, or newlines mangled by echo '...').
+          python3 -c "import json,sys; json.load(open('$HOME/gdrive-sa.json'))" \
+            || { echo "::error::GDRIVE_SA_JSON secret is missing or not valid JSON"; exit 1; }
           cat > "$HOME/.config/rclone/rclone.conf" <<EOF
           [gdrive]
           type = drive
@@ -49,6 +55,13 @@ jobs:
           service_account_file = $HOME/gdrive-sa.json
           root_folder_id = ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
           EOF
+
+      - name: Sanity-check rclone can see the remote (no mount yet)
+        run: |
+          rclone lsd gdrive: -vv || {
+            echo "::error::rclone cannot list the Drive remote — auth/config problem, not a FUSE problem. See log above.";
+            exit 1;
+          }
 
       - name: Mount Google Drive
         run: |
@@ -58,11 +71,25 @@ jobs:
             --vfs-write-back 1s \
             --rc --rc-addr 127.0.0.1:5572 --rc-no-auth \
             --dir-cache-time 30s --poll-interval 15s \
-            --log-file /tmp/rclone.log --log-level INFO
-          sleep 5
+            --log-file /tmp/rclone.log --log-level DEBUG
+
+          # Poll instead of a flat sleep — retry for up to ~15s and bail
+          # the moment the mount is confirmed, instead of racing a fixed delay.
+          for i in $(seq 1 15); do
+            if mountpoint -q /tmp/gdrive; then
+              echo "Mounted after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
           if ! mountpoint -q /tmp/gdrive; then
             echo "::error::Drive mount failed"
-            cat /tmp/rclone.log || true
+            echo "----- rclone.log -----"
+            cat /tmp/rclone.log || echo "(rclone.log is empty or missing — the daemon likely never started)"
+            echo "----- fuse/device check -----"
+            ls -la /dev/fuse || echo "/dev/fuse missing"
+            which fusermount3 fusermount || echo "no fusermount binary on PATH"
             exit 1
           fi
           ls /tmp/gdrive
