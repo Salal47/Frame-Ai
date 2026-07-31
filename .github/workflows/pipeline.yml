@@ -116,9 +116,44 @@ jobs:
           RCLONE_RC_ADDR: "http://127.0.0.1:5572"
         run: python -u main.py
 
-      - name: Unmount Google Drive
+      - name: Show rclone log (upload errors, quota issues, etc.)
         if: always()
         run: |
-          curl -s -X POST http://127.0.0.1:5572/vfs/queue-wait -d '' || true
-          sleep 3
+          echo "----- /tmp/rclone.log (last 300 lines) -----"
+          tail -n 300 /tmp/rclone.log || echo "(rclone.log missing)"
+          echo "----- quota / permission errors only -----"
+          grep -iE "quota|permission|forbidden|error" /tmp/rclone.log || echo "(no matches)"
+
+      - name: Wait for pending uploads, then unmount Google Drive
+        if: always()
+        run: |
+          # NOTE: "vfs/queue-wait" is not a real rclone rc method (it 404s
+          # every time — "couldn't find method"), so it was never actually
+          # waiting for anything. The real endpoint is "vfs/queue", which
+          # lists what's still pending write-back to Drive. Poll it until
+          # empty (or we give up) so we don't force-unmount while chunks
+          # are still sitting in the local cache, unuploaded.
+          echo "Waiting for rclone VFS write-back queue to drain..."
+          deadline=$((SECONDS + 180))
+          while [ $SECONDS -lt $deadline ]; do
+            queue=$(curl -s -X POST http://127.0.0.1:5572/vfs/queue || echo '{}')
+            pending=$(echo "$queue" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('queue') or []))" 2>/dev/null || echo "0")
+            if [ "$pending" = "0" ]; then
+              echo "Queue drained after ${SECONDS}s."
+              break
+            fi
+            echo "  still ${pending} item(s) pending upload... (${SECONDS}s elapsed)"
+            sleep 5
+          done
+          if [ $SECONDS -ge $deadline ]; then
+            echo "::warning::Gave up waiting for the VFS queue to drain after 180s — some files may not have reached Drive."
+          fi
           fusermount -u /tmp/gdrive || true
+
+      - name: Upload rclone log as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rclone-log-${{ github.run_id }}
+          path: /tmp/rclone.log
+          retention-days: 7
