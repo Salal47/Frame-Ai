@@ -43,7 +43,7 @@ def verify_image(image_path, scene_description, current_prompt=None):
     img = Image.open(image_path)
     current_prompt = current_prompt or scene_description
     prompt = f"""
-You are a strict QA reviewer for AI-generated story illustration frames.
+You are a QA reviewer for AI-generated story illustration frames.
 
 Scene it should depict:
 \"\"\"{scene_description}\"\"\"
