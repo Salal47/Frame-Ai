@@ -66,12 +66,33 @@ jobs:
       - name: Mount Google Drive
         run: |
           mkdir -p /tmp/gdrive
+
+          # IMPORTANT: this shell runs with `bash -e`. If the mount command
+          # itself returns non-zero (e.g. it fails to daemonize because it
+          # can't grab /dev/fuse, a bad flag, etc.) `set -e` kills the whole
+          # step right here — before the poll loop or any diagnostics below
+          # ever run. So we capture its own exit code and stderr explicitly
+          # instead of just letting `-e` swallow it.
+          set +e
           rclone mount gdrive: /tmp/gdrive \
             --daemon --vfs-cache-mode writes \
             --vfs-write-back 1s \
             --rc --rc-addr 127.0.0.1:5572 --rc-no-auth \
             --dir-cache-time 30s --poll-interval 15s \
             --log-file /tmp/rclone.log --log-level DEBUG
+          mount_rc=$?
+          set -e
+
+          if [ "$mount_rc" -ne 0 ]; then
+            echo "::error::rclone mount command itself exited with code $mount_rc (failed before daemonizing)"
+            echo "----- rclone.log -----"
+            cat /tmp/rclone.log || echo "(rclone.log is empty or missing)"
+            echo "----- fuse/device check -----"
+            ls -la /dev/fuse || echo "/dev/fuse missing"
+            which fusermount3 fusermount || echo "no fusermount binary on PATH"
+            cat /etc/fuse.conf 2>/dev/null || echo "/etc/fuse.conf missing"
+            exit 1
+          fi
 
           # Poll instead of a flat sleep — retry for up to ~15s and bail
           # the moment the mount is confirmed, instead of racing a fixed delay.
