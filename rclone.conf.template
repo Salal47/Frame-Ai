@@ -1,8 +1,17 @@
 ; Template only — the workflow generates the real rclone.conf at runtime
-; from the GDRIVE_SA_JSON + GDRIVE_ROOT_FOLDER_ID secrets. Kept here so the
-; shape is documented in git.
+; from the GDRIVE_OAUTH_TOKEN + GDRIVE_ROOT_FOLDER_ID secrets (and, if you
+; registered your own OAuth client, GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET).
+; Kept here so the shape is documented in git.
+;
+; Switched from a Service Account to OAuth (user account) because Service
+; Accounts have no storage quota of their own on My Drive and every upload
+; failed with "403 storageQuotaExceeded". A real Google account (via OAuth)
+; has quota, so uploads succeed. See README.md "Google Drive auth" section
+; for the one-time local step to generate GDRIVE_OAUTH_TOKEN.
 [gdrive]
 type = drive
 scope = drive
-service_account_file = /home/runner/gdrive-sa.json
-root_folder_id = YOUR_SHARED_FOLDER_ID
+client_id = YOUR_CLIENT_ID_OR_BLANK_FOR_RCLONE_DEFAULT
+client_secret = YOUR_CLIENT_SECRET_OR_BLANK_FOR_RCLONE_DEFAULT
+token = {"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}
+root_folder_id = YOUR_DRIVE_FOLDER_ID
