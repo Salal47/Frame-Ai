@@ -44,21 +44,28 @@ jobs:
         # "403 storageQuotaExceeded". A real Google account (OAuth) has
         # quota, so uploads succeed. GDRIVE_OAUTH_TOKEN is generated ONCE,
         # locally, via `rclone authorize "drive"` — see README.md.
+        env:
+          GDRIVE_OAUTH_TOKEN: ${{ secrets.GDRIVE_OAUTH_TOKEN }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
         run: |
           mkdir -p "$HOME/.config/rclone"
 
           # Fail fast if the secret didn't come through as valid JSON.
-          python3 -c "import json,sys; json.loads('''${{ secrets.GDRIVE_OAUTH_TOKEN }}''')" \
+          # Read from the env var (not interpolated into the -c string) so
+          # the token's own double quotes can never break bash's quoting.
+          python3 -c "import json,os,sys; json.loads(os.environ['GDRIVE_OAUTH_TOKEN'])" \
             || { echo "::error::GDRIVE_OAUTH_TOKEN secret is missing or not valid JSON"; exit 1; }
 
           cat > "$HOME/.config/rclone/rclone.conf" <<EOF
           [gdrive]
           type = drive
           scope = drive
-          client_id = ${{ secrets.GDRIVE_CLIENT_ID }}
-          client_secret = ${{ secrets.GDRIVE_CLIENT_SECRET }}
-          token = ${{ secrets.GDRIVE_OAUTH_TOKEN }}
-          root_folder_id = ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+          client_id = $GDRIVE_CLIENT_ID
+          client_secret = $GDRIVE_CLIENT_SECRET
+          token = $GDRIVE_OAUTH_TOKEN
+          root_folder_id = $GDRIVE_ROOT_FOLDER_ID
           EOF
 
       - name: Sanity-check rclone can see the remote (no mount yet)
