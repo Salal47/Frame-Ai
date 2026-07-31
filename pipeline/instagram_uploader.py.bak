@@ -1,0 +1,160 @@
+"""
+DISABLED FOR NOW — rename this file back to instagram_uploader.py and re-add
+the `from pipeline.instagram_uploader import upload_pending` import +
+`run_instagram_uploads()` call in main.py to turn it back on.
+
+Instagram section: get finished generations -> upload via API -> set state
+so the same video is never posted twice, per your instructions
+("upload or get kra set or output or generations").
+
+- get_pending_generations(): scans OUTPUT_ROOT for *_final.mp4 files the v3
+  pipeline has produced (the "generations" / "output").
+- upload_pending(): logs into Instagram via instagrapi (session cached on
+  Drive so it doesn't re-login every run) and uploads as a Reel, then
+  records it in instagram_upload_state.csv (the "set") so it's skipped
+  next time.
+
+Uses instagrapi — a private-API client driven with just your Instagram
+username/password (IG_USERNAME / IG_PASSWORD secrets). No Meta Business/
+Developer app approval needed, which is why this was picked as the default.
+"""
+import csv
+import json
+import os
+from pathlib import Path
+
+from . import config
+
+UPLOAD_FIELDS = ["final_path", "video_name", "status", "media_id", "uploaded_at", "error"]
+
+
+def _load_upload_state(path=None):
+    path = path or config.UPLOAD_STATE_CSV_PATH
+    rows = {}
+    if os.path.isfile(path):
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                rows[row["final_path"]] = row
+    return rows
+
+
+def _save_upload_state(rows, path=None):
+    path = path or config.UPLOAD_STATE_CSV_PATH
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=UPLOAD_FIELDS)
+        writer.writeheader()
+        for row in rows.values():
+            writer.writerow({k: row.get(k, "") for k in UPLOAD_FIELDS})
+
+
+def get_pending_generations(output_dir=None):
+    """OUTPUT (generations): every *_final.mp4 the pipeline has produced that
+    isn't already recorded as uploaded in instagram_upload_state.csv."""
+    output_dir = output_dir or config.OUTPUT_ROOT
+    uploaded = _load_upload_state()
+
+    pending = []
+    for root, _dirs, files in os.walk(output_dir):
+        for fname in files:
+            if fname.endswith("_final.mp4"):
+                full_path = os.path.join(root, fname)
+                row = uploaded.get(full_path)
+                if row and row.get("status") == "uploaded":
+                    continue
+                pending.append(full_path)
+    return sorted(pending)
+
+
+def _caption_for(final_path):
+    """Best-effort caption: reuse the first chunk's script if we can find it,
+    otherwise just the file's title-cased stem."""
+    run_dir = os.path.dirname(final_path)
+    video_name = Path(final_path).stem.replace("_final", "")
+    run_state_path = os.path.join(run_dir, "run_state.json")
+    caption = video_name.replace("_", " ").replace("-", " ").strip()
+    try:
+        if os.path.isfile(run_state_path):
+            with open(run_state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            first_chunk = state.get("chunks", {}).get("1", {})
+            script = first_chunk.get("script", "")
+            if script:
+                caption = script.strip().split("\n")[0][:180]
+    except Exception:
+        pass
+    if config.IG_CAPTION_SUFFIX:
+        caption = f"{caption}\n\n{config.IG_CAPTION_SUFFIX}"
+    return caption
+
+
+def _get_client():
+    from instagrapi import Client  # imported lazily so the rest of the
+    # pipeline works even if instagrapi/its deps aren't installed yet
+
+    if not config.IG_USERNAME or not config.IG_PASSWORD:
+        raise RuntimeError(
+            "IG_USERNAME / IG_PASSWORD secrets are not set — can't log in to Instagram."
+        )
+
+    cl = Client()
+    if os.path.isfile(config.IG_SESSION_PATH):
+        try:
+            cl.load_settings(config.IG_SESSION_PATH)
+            cl.login(config.IG_USERNAME, config.IG_PASSWORD)
+            cl.get_timeline_feed()  # cheap call to confirm the session is still valid
+            return cl
+        except Exception as err:
+            print(f"   ⚠️ cached IG session invalid ({err}) — logging in fresh")
+
+    cl.login(config.IG_USERNAME, config.IG_PASSWORD)
+    os.makedirs(os.path.dirname(config.IG_SESSION_PATH) or ".", exist_ok=True)
+    cl.dump_settings(config.IG_SESSION_PATH)
+    return cl
+
+
+def upload_pending(max_uploads=None):
+    """GET pending generations -> upload via API -> SET their state to uploaded."""
+    max_uploads = config.IG_MAX_UPLOADS_PER_RUN if max_uploads is None else max_uploads
+    pending = get_pending_generations()
+    if not pending:
+        print("📭 No finished videos waiting for Instagram upload.")
+        return []
+
+    rows = _load_upload_state()
+    client = None
+    uploaded = []
+
+    for final_path in pending[:max_uploads]:
+        video_name = Path(final_path).stem.replace("_final", "")
+        print(f"⬆️  Uploading to Instagram: {video_name}")
+        try:
+            if client is None:
+                client = _get_client()
+            caption = _caption_for(final_path)
+            media = client.clip_upload(final_path, caption=caption)
+            rows[final_path] = {
+                "final_path": final_path,
+                "video_name": video_name,
+                "status": "uploaded",
+                "media_id": str(getattr(media, "pk", "")),
+                "uploaded_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%S"),
+                "error": "",
+            }
+            _save_upload_state(rows)
+            uploaded.append(final_path)
+            print(f"   ✅ uploaded: {video_name}")
+        except Exception as err:
+            print(f"   ❌ upload failed for {video_name}: {err}")
+            rows[final_path] = {
+                "final_path": final_path,
+                "video_name": video_name,
+                "status": "error",
+                "media_id": "",
+                "uploaded_at": "",
+                "error": str(err)[:300],
+            }
+            _save_upload_state(rows)
+            # keep going with the next pending video rather than aborting the run
+
+    return uploaded

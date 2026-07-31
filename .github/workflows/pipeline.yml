@@ -1,0 +1,74 @@
+name: Insta Uploader Pipeline v3.3
+
+on:
+  schedule:
+    # Every 1 hour, on the hour (requirement: har sechule har 1 ghanta bad chala)
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  # requirement: agr aik action chal raha ho tu dusra parallel na chale.
+  # cancel-in-progress:false means a second trigger QUEUES behind the
+  # currently running one instead of running alongside it; only one run is
+  # ever active at a time.
+  group: insta-uploader-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55   # stay under the hourly cadence; MAX_RUN_MINUTES below leaves it headroom to save state
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system deps (ffmpeg + fuse3 for rclone mount)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fuse3
+
+      - name: Install Python deps
+        run: pip install -r requirements.txt
+
+      - name: Install rclone
+        run: curl https://rclone.org/install.sh | sudo bash
+
+      - name: Configure Google Drive service account
+        run: |
+          mkdir -p "$HOME/.config/rclone"
+          echo '${{ secrets.GDRIVE_SA_JSON }}' > "$HOME/gdrive-sa.json"
+          cat > "$HOME/.config/rclone/rclone.conf" <<EOF
+          [gdrive]
+          type = drive
+          scope = drive
+          service_account_file = $HOME/gdrive-sa.json
+          root_folder_id = ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+          EOF
+
+      - name: Mount Google Drive
+        run: |
+          mkdir -p /tmp/gdrive
+          rclone mount gdrive: /tmp/gdrive \
+            --daemon --vfs-cache-mode writes --allow-other \
+            --dir-cache-time 30s --poll-interval 15s
+          sleep 5
+          ls /tmp/gdrive || (echo "::error::Drive mount failed" && exit 1)
+
+      - name: Run pipeline
+        env:
+          DRIVE_MOUNT_ROOT: /tmp/gdrive
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CHUNKS_PER_FILE_PER_TURN: "3"
+          MAX_RUN_MINUTES: "45"
+          BROLL_RATIO: "0.4"
+        run: python main.py
+
+      - name: Unmount Google Drive
+        if: always()
+        run: fusermount -u /tmp/gdrive || true

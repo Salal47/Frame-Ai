@@ -1,0 +1,8 @@
+; Template only — the workflow generates the real rclone.conf at runtime
+; from the GDRIVE_SA_JSON + GDRIVE_ROOT_FOLDER_ID secrets. Kept here so the
+; shape is documented in git.
+[gdrive]
+type = drive
+scope = drive
+service_account_file = /home/runner/gdrive-sa.json
+root_folder_id = YOUR_SHARED_FOLDER_ID
