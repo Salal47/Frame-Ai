@@ -107,17 +107,27 @@ def generate_verified_image_v3(description, output_path, broll_lookup, scene_loo
     """
     max_attempts_per_model = max_attempts_per_model or config.MAX_ATTEMPTS_PER_IMAGE_MODEL
     last_path = f"{output_path}.png"
+    current_prompt = description
 
     for model_name in config.IMAGE_MODEL_CHAIN:
         for attempt in range(1, max_attempts_per_model + 1):
-            img = generate_image_with_model(model_name, description, output_path)
+            img = generate_image_with_model(model_name, current_prompt, output_path)
             if img is None:
                 print(f"   [{model_name}] generation failed, retry {attempt}/{max_attempts_per_model}")
                 continue
-            ok, reason = verify_image(last_path, description)
+
+            # Always verify against the ORIGINAL scene description, not the
+            # (possibly reworded) generation prompt — that's the ground truth.
+            # verify_image returns a refined prompt in the SAME vision call
+            # when it fails, so no extra Gemini call is needed here.
+            ok, reason, refined_prompt = verify_image(last_path, description, current_prompt)
             if ok:
                 return {"source_type": "generate", "path": last_path, "model": model_name}
             print(f"   [{model_name}] ✗ verification failed: {reason} (attempt {attempt}/{max_attempts_per_model})")
+
+            if refined_prompt:
+                print(f"   ✏️ refined prompt: {refined_prompt}")
+                current_prompt = refined_prompt
         print(f"   [{model_name}] exhausted — rolling out to next image model")
 
     print("   ⚠️ all image models failed for this scene — asking the LLM for a b-roll/stock fallback")
