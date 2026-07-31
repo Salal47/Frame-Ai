@@ -2,8 +2,8 @@ name: Insta Uploader Pipeline v3.3
 
 on:
   schedule:
-    # Every 1 hour, on the hour (requirement: har sechule har 1 ghanta bad chala)
-    - cron: "0 * * * *"
+    # Every 3 hours, on the hour (requirement: har 3 ghante bad chala)
+    - cron: "0 */3 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -17,7 +17,7 @@ concurrency:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 55   # stay under the hourly cadence; MAX_RUN_MINUTES below leaves it headroom to save state
+    timeout-minutes: 165   # 2.5h pipeline budget (below) + headroom to save state/upload before job's own timeout kills it
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,6 +55,8 @@ jobs:
           mkdir -p /tmp/gdrive
           rclone mount gdrive: /tmp/gdrive \
             --daemon --vfs-cache-mode writes \
+            --vfs-write-back 1s \
+            --rc --rc-addr 127.0.0.1:5572 --rc-no-auth \
             --dir-cache-time 30s --poll-interval 15s \
             --log-file /tmp/rclone.log --log-level INFO
           sleep 5
@@ -71,10 +73,15 @@ jobs:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CHUNKS_PER_FILE_PER_TURN: "3"
-          MAX_RUN_MINUTES: "45"
+          MAX_RUN_MINUTES: "150"
           BROLL_RATIO: "0.4"
-        run: python main.py
+          PYTHONUNBUFFERED: "1"
+          RCLONE_RC_ADDR: "http://127.0.0.1:5572"
+        run: python -u main.py
 
       - name: Unmount Google Drive
         if: always()
-        run: fusermount -u /tmp/gdrive || true
+        run: |
+          curl -s -X POST http://127.0.0.1:5572/vfs/queue-wait -d '' || true
+          sleep 3
+          fusermount -u /tmp/gdrive || true
