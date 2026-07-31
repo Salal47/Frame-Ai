@@ -38,7 +38,7 @@ def _run_dir_for(file_path, output_dir):
 
 
 def process_file_step(file_path, max_new_chunks, output_dir=None, language="Urdu",
-                       minutes_per_chunk=3, broll_ratio=None, libraries=None):
+                       minutes_per_chunk=1, broll_ratio=None, libraries=None):
     """
     Process up to `max_new_chunks` not-yet-done chunks of `file_path`, then
     return. Chunks that were already finished in a previous run are skipped
