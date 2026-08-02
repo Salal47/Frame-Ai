@@ -17,6 +17,26 @@ def _format_asset_list(assets, kind):
     return "\n".join(lines)
 
 
+def _normalize_plan(data):
+    """
+    Gemini sometimes returns a bare JSON array (`[...]`) instead of the
+    requested `{"segments": [...]}` wrapper, even with response_schema-less
+    response_mime_type="application/json" — that's valid JSON, just not the
+    shape we asked for. Normalize it here so downstream code (reconcile_plan
+    etc.) can always assume `plan["segments"]` exists, instead of crashing
+    with something like `list indices must be integers or slices, not str`.
+    """
+    if isinstance(data, list):
+        return {"segments": data}
+    if isinstance(data, dict) and "segments" not in data:
+        # Some other wrapper key (e.g. {"plan": [...]}) — use the first
+        # list-of-dicts value found.
+        for value in data.values():
+            if isinstance(value, list) and (not value or isinstance(value[0], dict)):
+                return {"segments": value}
+    return data
+
+
 def plan_video(script, target_duration, broll_options, scene_options,
                 broll_ratio=None, language="Urdu"):
     """
@@ -101,7 +121,7 @@ Return ONLY JSON in this exact shape:
         "creative", prompt,
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
-    return json.loads(response.text)
+    return _normalize_plan(json.loads(response.text))
 
 
 def reconcile_plan(plan, target_duration, broll_lookup, scene_lookup,
@@ -119,6 +139,13 @@ def reconcile_plan(plan, target_duration, broll_lookup, scene_lookup,
     """
     broll_ratio = config.BROLL_RATIO if broll_ratio is None else broll_ratio
     tolerance = config.PLAN_DURATION_TOLERANCE_SECS if tolerance is None else tolerance
+
+    plan = _normalize_plan(plan)
+    if not isinstance(plan, dict) or not isinstance(plan.get("segments"), list):
+        raise ValueError(
+            f"plan_video() returned a shape reconcile_plan can't use "
+            f"(expected a dict with a 'segments' list): {plan!r}"
+        )
 
     segs = sorted(plan["segments"], key=lambda s: s["order"])
     fixed_total, gen_total = 0.0, 0.0
