@@ -17,7 +17,7 @@ hourly run resumes exactly here).
 import os
 from pathlib import Path
 
-from . import config
+from . import config, manifest
 from .content_gen import (
     split_text_for_narration, load_chunks, create_novel_video_script,
     text_to_audio_gemini, get_audio_duration,
@@ -107,7 +107,12 @@ def process_file_step(file_path, max_new_chunks, output_dir=None, language="Urdu
         if c_state.get("script"):
             script = c_state["script"]
         else:
-            script = create_novel_video_script(chunk_text, language=language)
+            if config.SCRIPT_REWRITE_ENABLED:
+                script = create_novel_video_script(chunk_text, language=language)
+            else:
+                # d2 default: narrate the source text as-is, no rewriting
+                # LLM call at all.
+                script = chunk_text.strip()
             c_state["script"] = script
             save_run_state(run_dir, state)
 
@@ -143,7 +148,7 @@ def process_file_step(file_path, max_new_chunks, output_dir=None, language="Urdu
             else:
                 img_out = os.path.join(images_dir, f"{video_name}-c{chunk_id}-seg{order}")
                 print(f"   segment {order} [generate]: {seg['prompt'][:90]}...")
-                result = generate_verified_image_v3(seg["prompt"], img_out, broll_lookup, scene_lookup)
+                result = generate_verified_image_v3(seg["prompt"], img_out)
                 resolved = {"source_type": result["source_type"], "path": result["path"]}
 
             seg["path"] = resolved["path"]
@@ -152,6 +157,9 @@ def process_file_step(file_path, max_new_chunks, output_dir=None, language="Urdu
             save_run_state(run_dir, state)
 
         chunk_video_path = assemble_chunk_video_v3(segments, narration_path, chunk_video_path)
+        # d2: record this chunk video in the root-folder manifest CSV the
+        # moment it's saved to disk.
+        manifest.record_video(video_name, chunk_id, chunk_video_path)
         print(f"   ⏳ confirming chunk {chunk_id} reached Google Drive before continuing...")
         if wait_for_upload(chunk_video_path, label=f"{video_name} chunk {chunk_id}"):
             print(f"   ☁️  chunk {chunk_id} confirmed on Drive")
@@ -170,6 +178,8 @@ def process_file_step(file_path, max_new_chunks, output_dir=None, language="Urdu
         os.path.join(chunks_dir, f"{video_name}-chunk{c['chunk']}.mp4") for c in chunks
     ]
     final_path = assemble_final_video(all_chunk_video_paths, final_path)
+    # d2: record the final assembled video in the manifest CSV too.
+    manifest.record_video(video_name, "final", final_path)
     print(f"   ⏳ confirming final video reached Google Drive...")
     if wait_for_upload(final_path, label=f"{video_name} final"):
         print(f"   ☁️  final video confirmed on Drive")
