@@ -1,19 +1,19 @@
 """v3 multi-model image generation with automatic rollout across
-IMAGE_MODEL_CHAIN + LLM-chosen b-roll/stock fallback when every model fails
-verification. cell 36, unchanged logic."""
+IMAGE_MODEL_CHAIN. d2: no more b-roll/stock fallback when every model fails
+verification — instead, every attempt from every model is scored and the
+single highest-accuracy attempt across the whole chain is kept. Prompts are
+also now written per-model (see config.IMAGE_MODEL_PROMPT_HINTS) since not
+every model in the chain is equally capable."""
 import base64
-import json
+import os
 import urllib.parse
 from io import BytesIO
 
 import requests
 from PIL import Image
-from google.genai import types
 
 from . import config
-from .gemini_manager import gemini_text
 from .images import verify_image
-from .planner import _format_asset_list
 
 
 def _gen_image_openai(model_name, prompt, output_path, timeout=90):
@@ -74,69 +74,77 @@ def generate_image_with_model(model_name, prompt, output_path):
     return _gen_image_pollinations(model_name, prompt, output_path)
 
 
-def llm_pick_fallback_asset(description, broll_options, scene_options):
-    """Called only when every image model failed verification for a scene."""
-    prompt = f"""
-Image generation for this scene kept coming back broken or off-scene after
-trying every available model:
-\"\"\"{description}\"\"\"
-
-Pick the SINGLE best-matching clip from the lists below as a substitute.
-
-B-ROLL CLIPS:
-{_format_asset_list(broll_options, 'broll')}
-
-STOCK/SCENE CLIPS:
-{_format_asset_list(scene_options, 'stock')}
-
-Return ONLY JSON: {{"source_type": "broll" or "stock", "asset_id": "<id>", "reason": "..."}}
-"""
-    response = gemini_text(
-        "standard", prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
-    )
-    return json.loads(response.text)
+def _model_aware_prompt(model_name, base_prompt):
+    """d2: not every model in IMAGE_MODEL_CHAIN is equally powerful, so the
+    generation prompt is written WITH the model name in mind instead of
+    sending the exact same prompt to every model. Uses
+    config.IMAGE_MODEL_PROMPT_HINTS (falls back to a generic hint for an
+    unlisted model)."""
+    hint = config.IMAGE_MODEL_PROMPT_HINTS.get(model_name, config.DEFAULT_IMAGE_MODEL_HINT)
+    return f"{base_prompt}\n\n[Guidance for the '{model_name}' image model: {hint}]"
 
 
-def generate_verified_image_v3(description, output_path, broll_lookup, scene_lookup,
-                                max_attempts_per_model=None):
+def generate_verified_image_v3(description, output_path, max_attempts_per_model=None):
     """
     Try each model in IMAGE_MODEL_CHAIN in order (with retries per model),
-    verifying against the scene description each time. If every model fails,
-    ask the LLM to substitute a b-roll/stock clip instead.
+    verifying against the scene description each time and scoring every
+    attempt (accuracy comes back in the SAME verify_image call — no extra
+    API calls). Each attempt is written to its own temp file; whichever
+    attempt scores highest is the one kept.
+
+    d2: there is NO b-roll/stock fallback anymore. If nothing ever passes
+    verification, the single highest-accuracy attempt seen across every
+    model/retry is used instead of silently substituting a b-roll clip.
     """
     max_attempts_per_model = max_attempts_per_model or config.MAX_ATTEMPTS_PER_IMAGE_MODEL
-    last_path = f"{output_path}.png"
-    current_prompt = description
+    final_path = f"{output_path}.png"
+    best = {"score": -1.0, "path": None, "model": None}
 
     for model_name in config.IMAGE_MODEL_CHAIN:
+        current_prompt = _model_aware_prompt(model_name, description)
+
         for attempt in range(1, max_attempts_per_model + 1):
-            img = generate_image_with_model(model_name, current_prompt, output_path)
+            attempt_base = f"{output_path}__{model_name.replace('-', '_')}_a{attempt}"
+            img = generate_image_with_model(model_name, current_prompt, attempt_base)
             if img is None:
                 print(f"   [{model_name}] generation failed, retry {attempt}/{max_attempts_per_model}")
                 continue
+            attempt_path = f"{attempt_base}.png"
 
             # Always verify against the ORIGINAL scene description, not the
             # (possibly reworded) generation prompt — that's the ground truth.
-            # verify_image returns a refined prompt in the SAME vision call
-            # when it fails, so no extra Gemini call is needed here.
-            ok, reason, refined_prompt = verify_image(last_path, description, current_prompt)
-            if ok:
-                return {"source_type": "generate", "path": last_path, "model": model_name}
-            print(f"   [{model_name}] ✗ verification failed: {reason} (attempt {attempt}/{max_attempts_per_model})")
+            # verify_image returns a refined prompt + accuracy score in the
+            # SAME vision call, so no extra Gemini call is needed here.
+            ok, reason, refined_prompt, accuracy = verify_image(attempt_path, description, current_prompt)
 
+            if ok:
+                print(f"   [{model_name}] ✔ verified (score {accuracy:.0f}/100)")
+                if best["path"] and os.path.isfile(best["path"]):
+                    os.remove(best["path"])
+                os.replace(attempt_path, final_path)
+                return {"source_type": "generate", "path": final_path, "model": model_name, "accuracy": accuracy}
+
+            if accuracy > best["score"]:
+                if best["path"] and os.path.isfile(best["path"]):
+                    os.remove(best["path"])
+                best = {"score": accuracy, "path": attempt_path, "model": model_name}
+            else:
+                os.remove(attempt_path)
+
+            print(f"   [{model_name}] ✗ verification failed: {reason} "
+                  f"(score {accuracy:.0f}/100, attempt {attempt}/{max_attempts_per_model})")
             if refined_prompt:
                 print(f"   ✏️ refined prompt: {refined_prompt}")
-                current_prompt = refined_prompt
+                current_prompt = _model_aware_prompt(
+                    model_name, refined_prompt,
+                )
         print(f"   [{model_name}] exhausted — rolling out to next image model")
 
-    print("   ⚠️ all image models failed for this scene — asking the LLM for a b-roll/stock fallback")
-    all_broll = list(broll_lookup.values())
-    all_scenes = list(scene_lookup.values())
-    fallback = llm_pick_fallback_asset(description, all_broll, all_scenes)
-    lookup = broll_lookup if fallback.get("source_type") == "broll" else scene_lookup
-    asset = lookup.get(fallback.get("asset_id"))
-    if asset is None:
-        print("   ⚠️ LLM fallback also failed to resolve — keeping the last (broken) generated image")
-        return {"source_type": "generate", "path": last_path, "model": "none"}
-    return {"source_type": fallback["source_type"], "asset_id": asset["id"], "path": asset["path"]}
+    if best["path"] is None:
+        print("   ⚠️ every image model failed to even generate an image for this scene")
+        return {"source_type": "generate", "path": final_path, "model": "none", "accuracy": 0}
+
+    os.replace(best["path"], final_path)
+    print(f"   ⚠️ no model passed verification for this scene — keeping the highest-accuracy "
+          f"attempt anyway ({best['model']}, score {best['score']:.0f}/100)")
+    return {"source_type": "generate", "path": final_path, "model": best["model"], "accuracy": best["score"]}
