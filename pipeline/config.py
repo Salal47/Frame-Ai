@@ -141,8 +141,12 @@ PLAN_DURATION_TOLERANCE_SECS = 0.20
 # generation prompt is written "knowing" which model will receive it.
 IMAGE_MODEL_PROMPT_HINTS = {
     "gpt-image-2": (
-        "This model handles complex multi-subject scenes, text, and fine "
-        "detail well — the full detailed description can be used as-is."
+        "Use clear, natural-language prompts. Describe the subject, scene, "
+        "action, style, lighting, composition, and any important constraints. "
+        "The model follows detailed instructions well, but prioritize clarity "
+        "over unnecessary length. For edits, explicitly state what should "
+        "change and what must remain unchanged."
+        "Subject,Primary action,Environment,Composition,Lighting,Visual style,Important details,Text to render, Constraints (optional),Negative constraints:"
     ),
     "gptimage": (
         "This model handles complex multi-subject scenes, text, and fine "
@@ -173,6 +177,7 @@ IMAGE_MODEL_PROMPT_HINTS = {
 DEFAULT_IMAGE_MODEL_HINT = (
     "Keep the prompt concrete and unambiguous about subject, setting, and "
     "camera framing."
+    "Keep the promot Generic"
 )
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
