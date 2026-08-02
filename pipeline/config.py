@@ -129,7 +129,7 @@ for _d in (BROLL_DIR, SCENE_LIBRARY_DIR):
 # both in the planner prompt and, as a hard guarantee, in
 # planner.reconcile_plan() (which demotes excess "broll" segments to
 # "generate" if the LLM's plan went over).
-BROLL_RATIO = float(os.environ.get("BROLL_RATIO", "0.2"))
+BROLL_RATIO = float("0.2")
 
 IMAGE_MODEL_CHAIN = ["gpt-image-2", "gptimage"]
 MAX_ATTEMPTS_PER_IMAGE_MODEL = 3
