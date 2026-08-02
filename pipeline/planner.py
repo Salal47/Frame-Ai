@@ -38,24 +38,39 @@ total line up exactly. "broll" and "stock" segments have a FIXED, already-
 recorded duration (given below) that you cannot change or extend — only
 choose WHERE in the sequence to place them and whether the moment fits.
 
-REQUIREMENT: at least {broll_ratio*100:.0f}% of the total duration must be
-covered by "broll" segments. If there isn't a good b-roll match for enough of
-the timeline, use "stock" or "generate" for the rest, but try hard to hit the
-ratio with genuinely well-matched b-roll first.
+TIMING MUST BE TIGHT: each segment's visual has to be on screen AT OR BEFORE
+the moment the narration talks about it — never after. Don't let the
+narration finish describing something before its matching visual appears.
+Since "broll"/"stock" have a fixed duration but "generate" segments don't,
+use the free-form length of "generate" segments to pull visuals earlier or
+stretch/shrink them so the picture and the words line up tightly — you are
+free to make a "generate" segment shorter or longer than neighboring beats
+purely to keep this sync correct.
 
-For every moment, prefer in this order:
+HARD LIMIT: "broll" segments must cover AT MOST {broll_ratio*100:.0f}% of the
+total duration — never more. Only reach for "broll" when its hand-gesture/
+body-movement/pace description genuinely matches the narration AND you still
+have headroom under that {broll_ratio*100:.0f}% ceiling; once you're at or near
+it, use "stock" or "generate" for everything else even if another b-roll clip
+would technically fit.
+
+For every moment, prefer in this order (subject to the {broll_ratio*100:.0f}%
+b-roll ceiling above):
 1. "broll" — narrator b-roll clip, IF its hand-gesture/body-movement/pace
-   description genuinely matches what the narration is saying and its FIXED
-   duration fits naturally at that point in the timeline. Lips don't matter
-   (masked) but gesture, pacing, and background must fit the moment.
+   description genuinely matches what the narration is saying, its FIXED
+   duration fits naturally at that point in the timeline, AND using it won't
+   push the b-roll total over the {broll_ratio*100:.0f}% ceiling. Lips don't
+   matter (masked) but gesture, pacing, and background must fit the moment.
 2. "stock" — an existing stock/scene clip, IF its description matches the
    scene/setting/mood better than generating a new image would.
-3. "generate" — only if neither library has a genuine match. Give a
-   detailed AI-image-generation prompt (subject, setting, action, mood,
-   lighting, camera angle) and choose whatever duration makes sense for that
-   beat. IMPORTANT: if the scene includes a person, the prompt MUST specify a
-   wide or medium shot (e.g. "medium shot", "full-body shot", "wide
-   establishing shot") — never a tight close-up/face-focused framing.
+3. "generate" — the default whenever neither library has a genuine match, or
+   the b-roll ceiling is already used up, or tight narration-sync needs a
+   duration a fixed clip can't provide. Give a detailed AI-image-generation
+   prompt (subject, setting, action, mood, lighting, camera angle) and choose
+   whatever duration keeps the visual synced to the narration at that beat.
+   IMPORTANT: if the scene includes a person, the prompt MUST specify a wide
+   or medium shot (e.g. "medium shot", "full-body shot", "wide establishing
+   shot") — never a tight close-up/face-focused framing.
 
 Keep characters/setting consistent across "generate" segments.
 
@@ -94,8 +109,13 @@ def reconcile_plan(plan, target_duration, broll_lookup, scene_lookup,
     """
     Snap broll/stock segment durations to their REAL clip duration (never
     trust the LLM's number for these), then rescale only the "generate"
-    segments proportionally so the total matches target_duration. Also
-    reports whether the broll ratio requirement was actually met.
+    segments proportionally so the total matches target_duration.
+
+    d2: broll_ratio is now a hard MAX CEILING, not a minimum floor. This is
+    enforced here as a guarantee (not just a prompt instruction) — if the
+    LLM's plan put more than broll_ratio's worth of b-roll on the timeline,
+    the excess "broll" segments are demoted to "generate" (largest first, so
+    the fewest segments need demoting) until the ceiling is satisfied.
     """
     broll_ratio = config.BROLL_RATIO if broll_ratio is None else broll_ratio
     tolerance = config.PLAN_DURATION_TOLERANCE_SECS if tolerance is None else tolerance
@@ -117,7 +137,31 @@ def reconcile_plan(plan, target_duration, broll_lookup, scene_lookup,
         else:
             gen_total += max(0.5, float(s.get("duration", 3)))
 
+    # --- HARD CEILING: b-roll must never exceed broll_ratio of the total ---
     broll_secs = sum(s["duration"] for s in segs if s["source_type"] == "broll")
+    max_broll_secs = broll_ratio * target_duration
+    if broll_secs > max_broll_secs + 1e-6:
+        excess = broll_secs - max_broll_secs
+        broll_segs_desc = sorted(
+            (s for s in segs if s["source_type"] == "broll"),
+            key=lambda s: s["duration"], reverse=True,
+        )
+        demoted = 0
+        for s in broll_segs_desc:
+            if excess <= 1e-6:
+                break
+            reclaimed = s["duration"]
+            s["source_type"], s["asset_id"] = "generate", None
+            s["prompt"] = s.get("prompt") or s.get("reason") or "cinematic scene matching the narration"
+            s["duration"] = max(1.0, reclaimed)
+            fixed_total -= reclaimed
+            gen_total += s["duration"]
+            broll_secs -= reclaimed
+            excess -= reclaimed
+            demoted += 1
+        print(f"   ⚠️ b-roll ceiling ({broll_ratio:.0%}) exceeded — demoted {demoted} "
+              f"broll segment(s) to 'generate' to stay under the cap")
+
     total = fixed_total + gen_total
     delta = target_duration - total
 
@@ -128,9 +172,7 @@ def reconcile_plan(plan, target_duration, broll_lookup, scene_lookup,
                 s["duration"] = round(max(0.5, float(s["duration"])) * scale, 2)
 
     achieved_ratio = broll_secs / target_duration if target_duration > 0 else 0
-    if achieved_ratio + 1e-6 < broll_ratio:
-        print(f"   ⚠️ b-roll ratio target {broll_ratio:.0%} not met (got {achieved_ratio:.0%}) — "
-              f"not enough matching b-roll was available/appropriate for this chunk")
+    print(f"   ℹ️ b-roll coverage: {achieved_ratio:.0%} of this chunk (ceiling {broll_ratio:.0%})")
 
     plan["segments"] = segs
     return plan
